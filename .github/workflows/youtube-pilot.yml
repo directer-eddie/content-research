@@ -1,0 +1,29 @@
+name: YouTube collection pilot
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: youtube-pilot
+  cancel-in-progress: false
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify calculation rules
+        run: python -m unittest discover -s pilot -v
+      - name: Collect public video metadata
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+        run: python pilot/collect.py
+      - name: Save pilot report
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-pilot-report
+          path: private-data/pilot/
+          retention-days: 7
