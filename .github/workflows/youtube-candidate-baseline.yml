@@ -1,0 +1,68 @@
+name: YouTube candidate baseline pilot
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/youtube-candidate-baseline.yml
+permissions:
+  contents: read
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Collect candidate channels and recent uploads
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+        run: |
+          PYTHONPATH=pilot python - <<'PY'
+          import json, os
+          from datetime import datetime, timezone
+          from pathlib import Path
+          from collect import API, cutoff, timestamp
+
+          api = API(os.environ['YOUTUBE_API_KEY'], limit=80)
+          now = datetime.now(timezone.utc)
+          ids = 'ZRDpf2lY_Tw,D2mTnEWWLAo,sZ5eIbmgtdw,RieNeGCRung,Ip8fl3LK4mo'
+          fields = 'snippet,statistics,contentDetails,liveStreamingDetails'
+          candidates = api.get('videos', part=fields, id=ids).get('items', [])
+          channel_ids = sorted({v['snippet']['channelId'] for v in candidates})
+          channels = api.get('channels', part='snippet,contentDetails', id=','.join(channel_ids)).get('items', [])
+          output = dict(collected_at=now.isoformat(), cutoff=cutoff(now).isoformat(), channels=[], candidates=[])
+          def video(v):
+              s = v['snippet']
+              return dict(id=v['id'], title=s['title'], description=s.get('description',''),
+                          published=s['publishedAt'], channel_id=s['channelId'],
+                          views=int(v['statistics']['viewCount']) if 'viewCount' in v.get('statistics',{}) else None,
+                          live='liveStreamingDetails' in v or s.get('liveBroadcastContent','none') != 'none')
+          output['candidates'] = [video(v) for v in candidates]
+          for c in channels:
+              record = dict(id=c['id'], title=c['snippet']['title'], handle=c['snippet'].get('customUrl'),
+                            videos=[], complete=False)
+              output['channels'].append(record)
+              playlist = c['contentDetails']['relatedPlaylists']['uploads']
+              token = ''
+              seen = set()
+              missing = False
+              for _ in range(7):
+                  page = api.get('playlistItems', part='contentDetails', playlistId=playlist, maxResults=50, pageToken=token)
+                  batch = sorted({v['contentDetails']['videoId'] for v in page.get('items',[])}-seen)
+                  seen.update(batch)
+                  if batch:
+                      items = api.get('videos', part=fields, id=','.join(batch)).get('items',[])
+                      missing = missing or len(items) != len(batch)
+                      record['videos'].extend(video(v) for v in items if cutoff(now) <= timestamp(v['snippet']['publishedAt']) <= now)
+                  token = page.get('nextPageToken')
+                  if not token:
+                      record['complete'] = not missing
+                      break
+          Path('candidate-baselines.json').write_text(json.dumps(output,ensure_ascii=False),encoding='utf-8')
+          print('Candidate channels collected:',len(output['channels']))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: youtube-candidate-baselines
+          path: candidate-baselines.json
+          retention-days: 7
+          if-no-files-found: error
