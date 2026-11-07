@@ -28,10 +28,14 @@ jobs:
           RESEARCH_MONTHS: ${{ inputs.months || '3' }}
         run: |
           PYTHONPATH=pilot python - <<'PY'
-          import json, os
+          import calendar, json, os
           from datetime import datetime, timezone
           from pathlib import Path
-          from collect import API, cutoff
+          from collect import API
+
+          def cutoff(now, months):
+              year, month = divmod(now.year * 12 + now.month - 1 - months, 12)
+              return now.replace(year=year, month=month+1, day=min(now.day, calendar.monthrange(year, month+1)[1]))
 
           keyword = os.environ['RESEARCH_KEYWORD'].strip()
           months = int(os.environ['RESEARCH_MONTHS'])
