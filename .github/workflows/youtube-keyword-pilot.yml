@@ -1,0 +1,62 @@
+name: YouTube keyword pilot
+on:
+  workflow_dispatch:
+    inputs:
+      keyword:
+        description: YouTube search keyword
+        default: 인수인계
+        required: true
+      months:
+        description: Search window in calendar months (3–12)
+        default: '3'
+        required: true
+  push:
+    paths:
+      - .github/workflows/youtube-keyword-pilot.yml
+permissions:
+  contents: read
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Search and save public video metadata
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          RESEARCH_KEYWORD: ${{ inputs.keyword || '인수인계' }}
+          RESEARCH_MONTHS: ${{ inputs.months || '3' }}
+        run: |
+          PYTHONPATH=pilot python - <<'PY'
+          import json, os
+          from datetime import datetime, timezone
+          from pathlib import Path
+          from collect import API, cutoff
+
+          keyword = os.environ['RESEARCH_KEYWORD'].strip()
+          months = int(os.environ['RESEARCH_MONTHS'])
+          if not 0 < len(keyword) <= 100 or not 3 <= months <= 12:
+              raise SystemExit('Invalid keyword or month range.')
+          key = os.environ.get('YOUTUBE_API_KEY')
+          if not key:
+              raise SystemExit('YouTube API key is missing.')
+          now = datetime.now(timezone.utc)
+          api = API(key, limit=2)
+          result = api.get('search', part='snippet', type='video', q=keyword, maxResults=25,
+                           relevanceLanguage='ko', publishedAfter=cutoff(now, months).strftime('%Y-%m-%dT%H:%M:%SZ'))
+          ids = list(dict.fromkeys(item['id']['videoId'] for item in result.get('items', [])))
+          videos = api.get('videos', part='snippet,statistics', id=','.join(ids)).get('items', []) if ids else []
+          output = dict(keyword=keyword, months=months, collected_at=now.isoformat(), videos=[
+              dict(id=v['id'], title=v['snippet']['title'], channel=v['snippet']['channelTitle'],
+                   channel_id=v['snippet']['channelId'], published=v['snippet']['publishedAt'],
+                   views=int(v['statistics']['viewCount']) if 'viewCount' in v.get('statistics', {}) else None)
+              for v in videos])
+          Path('keyword-results.json').write_text(json.dumps(output, ensure_ascii=False), encoding='utf-8')
+          print('Public search candidates:', len(videos))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: youtube-keyword-results
+          path: keyword-results.json
+          retention-days: 7
+          if-no-files-found: error
